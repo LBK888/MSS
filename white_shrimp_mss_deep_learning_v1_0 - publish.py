@@ -1,6 +1,8 @@
 """
 white shrimp - MSS deep learning
 v1.0c 2024-06-27  
+Open Source @ https://github.com/LBK888/MSS
+License: Apache 2.0
 
 蝦蝦多光譜深度學習 自動合併數據 
 直接讀取google drive裡的excel檔  
