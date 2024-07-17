@@ -1,8 +1,7 @@
+# -*- coding: utf-8 -*-
 """
 white shrimp - MSS deep learning
-v1.0c 2024-06-27  
-Open Source @ https://github.com/LBK888/MSS
-License: Apache 2.0
+v1.2 2024-07-17  
 
 蝦蝦多光譜深度學習 自動合併數據 
 直接讀取google drive裡的excel檔  
@@ -14,39 +13,41 @@ License: Apache 2.0
 例如:
 光譜1,光譜2,光譜3, ,冷凍h,冷藏h,冷凍次數,解凍次數  
 
-其他設定請在第一段設定區設定:  
-root_path = '' 主資料夾
-
 
 MAPE: Computes the mean absolute percentage error between y_true & y_pred.
 loss = 100 * mean(abs((y_true - y_pred) / y_true), axis=-1)
 
 """
 import json
-import os
 import numpy as np
 
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.models import Sequential
-from tensorflow.keras import layers,callbacks
-
+import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from tensorflow.keras.models import Sequential
+from tensorflow.keras import layers,callbacks
+
+from tkinter import filedialog
+from tkinter import *
+
 
 #**** 設定區  ****#
 #### ANN structure ####
-ANN_Epoch=1200
+ANN_Epoch=1200      #最多訓練多少ANN_Epoch
+Epoch_patient=250   #當 ? 個Epoch後, val_loss沒有降低則提前停止
 Train_repeats=8   #整個重複幾次? 用來取平均值
+Node_N_ratio=1    #節點數量的倍率，放大模型用，建議1,2,4倍
 
-# ANN Model structures
-ANN_upLayers=[56,128,64,48,24,8]    #node numbers, input/output nodes are not included
-ANN_upDrops=[0,0,0,0,0,0]           #Dropout, 0=該層不使用，0.2~0.5=dropout %
+# for MSS
+ANN_upLayers=np.array([56,128,64,48,24,8])*Node_N_ratio
+ANN_upDrops=[0,0,0,0,0,0]   #Dropout, 0=該層不使用，0.2~0.5=dropout %
 
-ANN_lowLayers=[128,256,512,256,128,36,24]   #node numbers, input/output nodes are not included
-ANN_lowDrops=[0,0.4,0.4,0.5,0.4,0,0]        #Dropout, 0=該層不使用，0.2~0.5=dropout %
+ANN_lowLayers=np.array([128,256,512,256,128,36,24])*Node_N_ratio
+ANN_lowDrops=[0,0.4,0.4,0.5,0.4,0,0]    #Dropout, 0=該層不使用，0.2~0.5=dropout %
 
 
 #### Comparison axis ####
@@ -55,10 +56,14 @@ Compa_Axis=1  #資料組合方式
 # 1是input的項目變多，例如眼28個input與身體10個合併，輸入變成38個nodes
 
 #### 資料夾、檔名名稱 ####
-root_path = r'Z:\MSSvsFTcyc\Train_Fields'  #change dir "Shrimp" to your project folder
+root_path = r'C:/'
+have_test_data=True
 
-have_test_data=True       #Test data format has to be xlsx w/ correct sheet names. 
-test_data_path=r'Z:\禎禎\MSSvsFTcyc\Test_Fields\LZ_SC.xlsx' #do not include answers
+root = Tk()
+root.withdraw()
+root_path=filedialog.askdirectory(initialdir = root_path,title = "Select Training data folder")
+if have_test_data:
+    test_data_path =  filedialog.askopenfilename(initialdir = root_path,title = "Select TEST data file",filetypes = (("xls files","*.xlsx"),("all files","*.*")))
 
 #sanity check
 if len(ANN_upLayers)!=len(ANN_upDrops) or len(ANN_lowLayers)!=len(ANN_lowDrops):
@@ -69,26 +74,49 @@ to_normalize=True
 
 
 ### functions ###
-class SaveBestModel(callbacks.Callback):
-    def __init__(self, save_best_metric='val_loss', this_max=False):
-        self.save_best_metric = save_best_metric
-        self.max = this_max
-        if this_max:
-            self.best = float('-inf')
-        else:
-            self.best = float('inf')
+class EarlyStoppingAtMinLoss(callbacks.Callback):
+    """Stop training when the loss is at its min, i.e. the loss stops decreasing.
+
+    Arguments:
+        patience: Number of epochs to wait after min has been hit. After this
+        number of no improvement, training stops.
+
+    *the callback class was adapted from TensorFlow doc
+    """
+
+    def __init__(self, patience=5):
+        super().__init__()
+        self.patience = patience
+        # best_weights to store the weights at which the minimum loss occurs.
+        self.best_weights = None
+
+    def on_train_begin(self, logs=None):
+        # The number of epoch it has waited when loss is no longer minimum.
+        self.wait = 0
+        # The epoch the training stops at.
+        self.stopped_epoch = 0
+        # Initialize the best as infinity.
+        self.best = np.Inf
 
     def on_epoch_end(self, epoch, logs=None):
-        metric_value = logs[self.save_best_metric]
-        if self.max:
-            if metric_value > self.best:
-                self.best = metric_value
-                self.best_weights = self.model.get_weights()
-
+        current = logs.get("val_loss")  #modified
+        if np.less(current, self.best) or epoch==0:
+            self.best = current
+            self.wait = 0
+            # Record the best weights if current results is better (less).
+            self.best_weights = self.model.get_weights()
+            
         else:
-            if metric_value < self.best:
-                self.best = metric_value
-                self.best_weights= self.model.get_weights()
+            self.wait += 1
+            if self.wait >= self.patience:
+                self.stopped_epoch = epoch
+                self.model.stop_training = True
+                print("Restoring model weights from the end of the best epoch.")
+                self.model.set_weights(self.best_weights)
+
+    def on_train_end(self, logs=None):
+        if self.stopped_epoch > 0:
+            print("Epoch %05d: early stopping" % (self.stopped_epoch + 1))
 
 
 def check_processable_xls(path):
@@ -116,28 +144,31 @@ def check_processable_xls(path):
 
 
 
-def Save_Trained_Fig(history,iX,iY):
-
-    # list all data in history
+def Make_Blank_Fig():
     fig = plt.figure(figsize=(8, 16))
     ax1 = fig.add_subplot(211)
     ax2 = fig.add_subplot(212)
 
-    print(history.history.keys())
+    return fig,ax1,ax2
+
+def Plot_Trained_Fig(history,iX,iY,ax1,ax2):
+
     # summarize history for accuracy
-    ax1.plot(history.history['mape'])
-    ax1.plot(history.history['val_mape'])
-    ax1.set_title('model mape')
+    ax1.plot(history.history['mape'],color='royalblue',linewidth=1,alpha=0.5)
+    ax1.plot(history.history['val_mape'],color='darkorange',linewidth=1,alpha=0.5)
+    ax1.set_title(f'model mape of x{iX}-y{iY}')
     ax1.set(xlabel='epoch',ylabel='mape')
-    ax1.legend(['train', 'test'], loc='upper left')
+    ax1.legend(['train', 'validation'], loc='upper left')
 
     # summarize history for loss
-    ax2.plot(history.history['loss'])
-    ax2.plot(history.history['val_loss'])
-    ax2.set_title('model loss')
+    ax2.plot(history.history['loss'],color='royalblue',linewidth=1,alpha=0.5)
+    ax2.plot(history.history['val_loss'],color='darkorange',linewidth=1,alpha=0.5)
+    ax2.set_title(f'model loss of x{iX}-y{iY}')
     ax2.set(xlabel='epoch',ylabel='loss')
-    ax2.legend(['train', 'test'], loc='upper left')
+    ax2.legend(['train', 'validation'], loc='upper left')
 
+
+def Save_Trained_Fig(fig,iX,iY):
     #fig.show()
     fig.savefig(root_path+f'history_x{iX}_y{iY}.pdf', format='pdf')
     plt.close(fig)
@@ -152,7 +183,6 @@ def Save_Trained_Fig(history,iX,iY):
 ##### 取得excel資料  #####
   #找到所有可以讀取的檔案 進行合併
 xls_paths=check_processable_xls(root_path)
-
 
 merged_dfs={}
 
@@ -183,6 +213,9 @@ with pd.ExcelWriter('merged.xlsx') as writer:
 
 
 
+
+
+
 ##### read merged file #####
 data_all = pd.read_excel('merged.xlsx', sheet_name=None,index_col=None, header=None)
 sheet = pd.ExcelFile('merged.xlsx')
@@ -201,6 +234,7 @@ for s_name in sheet.sheet_names:
     elif prev_Total_Col!=Total_Col and  prev_Total_Col!=-1 and Compa_Axis==0:
         raise SystemExit('垂直合併，各sheet間的欄位需要相同')
     
+    
     prev_DataN=DataN
     prev_Total_Col=Total_Col
 
@@ -214,9 +248,12 @@ if have_test_data:
         test_data_sheet = pd.ExcelFile(test_data_path)
     elif '.csv' in test_data_path:
         have_test_data=False
-        pass    #not supported so far    
+        print('No test data found, set to False')
+
+
 
 ##### SCAN LOOP #####
+
 #prepare variables
 means_min_loss=np.zeros((ScanN,ScanN))
 stds_min_loss=np.zeros((ScanN,ScanN))
@@ -247,8 +284,19 @@ for y_idx in range(ScanN):
 
       #merge test data if needed  
       if have_test_data and sheet.sheet_names[x_idx] in test_data_sheet.sheet_names and sheet.sheet_names[y_idx] in test_data_sheet.sheet_names:
-        test_data_x=test_data_all.get(sheet.sheet_names[x_idx]).to_numpy()
-        test_data_y=test_data_all.get(sheet.sheet_names[y_idx]).to_numpy()
+        Test_Empty_ColA=test_data_all.get(sheet.sheet_names[x_idx]).columns[test_data_all.get(sheet.sheet_names[x_idx]).isna().any()].tolist()
+        if len(Test_Empty_ColA)>0:
+            #如果test檔案有 predict label
+            Test_Empty_Col=Test_Empty_ColA[0]
+            test_data_x=test_data_all.get(sheet.sheet_names[x_idx]).iloc[:,:Test_Empty_Col].to_numpy()
+            test_data_y=test_data_all.get(sheet.sheet_names[y_idx]).iloc[:,:Test_Empty_Col].to_numpy()
+            test_label_x=test_data_all.get(sheet.sheet_names[x_idx]).iloc[:,Test_Empty_Col+1:].to_numpy()
+            test_label_y=test_data_all.get(sheet.sheet_names[y_idx]).iloc[:,Test_Empty_Col+1:].to_numpy()
+            test_label=np.append(test_label_x,test_label_y, axis=Compa_Axis)
+        else:
+            test_data_x=test_data_all.get(sheet.sheet_names[x_idx]).to_numpy()
+            test_data_y=test_data_all.get(sheet.sheet_names[y_idx]).to_numpy()
+            test_label=np.array([])
         test_data=np.append(test_data_x,test_data_y, axis=Compa_Axis)
 
           
@@ -266,7 +314,16 @@ for y_idx in range(ScanN):
       label=data_all.get(sheet.sheet_names[x_idx]).iloc[:,xEmpty_Col+1:].to_numpy()
 
       if have_test_data and sheet.sheet_names[x_idx] in test_data_sheet.sheet_names:
-        test_data=test_data_all.get(sheet.sheet_names[x_idx]).to_numpy()
+        Test_Empty_ColA=test_data_all.get(sheet.sheet_names[x_idx]).columns[test_data_all.get(sheet.sheet_names[x_idx]).isna().any()].tolist()
+        
+        if len(Test_Empty_ColA)>0:
+            #如果test檔案有 predict label
+            Test_Empty_Col=Test_Empty_ColA[0]
+            test_data=test_data_all.get(sheet.sheet_names[x_idx]).iloc[:,:Test_Empty_Col].to_numpy()
+            test_label=test_data_all.get(sheet.sheet_names[x_idx]).iloc[:,Test_Empty_Col+1:].to_numpy()
+        else:
+            test_data=test_data_all.get(sheet.sheet_names[x_idx]).to_numpy()
+            test_label=np.array([])
 
     #update Ns
     trainN,inputN=data.shape
@@ -275,7 +332,10 @@ for y_idx in range(ScanN):
     #sanity check
     if trainN!=labelN:
       raise SystemExit('輸入資料與Label資料 筆數不相同')
-
+    elif np.isnan(np.sum(data)):
+      raise SystemExit(f'{sheet.sheet_names[x_idx]}-{sheet.sheet_names[y_idx]}, data資料中有NaN，請檢查資料的非數字或是空格,{np.argwhere(np.isnan(data))}')
+    elif np.isnan(np.sum(label)):
+      raise SystemExit(f'{sheet.sheet_names[x_idx]}-{sheet.sheet_names[y_idx]}, label資料中有NaN，請檢查資料的非數字或是空格,{np.argwhere(np.isnan(label))}')
 
 
 
@@ -289,17 +349,12 @@ for y_idx in range(ScanN):
         # 正規化，全體共用一範圍
         mean_data = data.mean() # 平均數
         std_data = data.std()   # 標準差
-        # 個別範圍
-        #mean_data = np.mean(data, axis=0)
-        #std_data = np.std(data, axis=0)
         data -= mean_data
         data /= std_data
 
         #label正規化
         mean_label = label.mean() # 平均數
         std_label = label.std()   # 標準差
-        #mean_label = np.mean(label, axis=0)
-        #std_label = np.std(label, axis=0)
         label -= mean_label
         label /= std_label
 
@@ -308,12 +363,14 @@ for y_idx in range(ScanN):
             test_data -= mean_data
             test_data /= std_data
 
+
     min_lossA=[]
     min_val_lossA=[]
     min_mapeA=[]
     max_val_accA=[]
     avg_val_accA=[]
-    save_best_model = SaveBestModel()
+
+    fig,ax1,ax2=Make_Blank_Fig()
 
     for train_loop_idx in range(Train_repeats):
 
@@ -348,11 +405,6 @@ for y_idx in range(ScanN):
         print(validation_data.shape)
         print(validation_label.shape)
 
-        # 測試集
-        #test_data = data[-5:]
-        #print(test_data.shape)
-        #test_label = label[-5:]
-
 
         #### Training ####
         # 建立神經網路架構
@@ -385,9 +437,13 @@ for y_idx in range(ScanN):
         
         history = model.fit(train_data,train_label,            # 訓練集
                                     validation_data=(validation_data,validation_label),  # 驗證集
-                                    epochs=ANN_Epoch,verbose=0,callbacks=[save_best_model])   # 訓練週期
-        model.set_weights(save_best_model.best_weights)
+                                    epochs=ANN_Epoch,verbose=0,callbacks=[EarlyStoppingAtMinLoss(patience=Epoch_patient)])   # 訓練週期
         
+        if len(min_val_lossA)==0 or min(history.history['val_loss'])<min(min_val_lossA):
+            model_to_save=model
+        
+
+
         min_lossA.append(min(history.history['loss']))
         min_val_lossA.append(min(history.history['val_loss']))
         min_mapeA.append(min(history.history['mape']))
@@ -395,9 +451,11 @@ for y_idx in range(ScanN):
 
         avg_val_accA.append(np.array(history.history['val_mape'][:-15]).mean())
 
-    #### END of Training ####
-    Save_Trained_Fig(history,x_idx,y_idx)
-    model.save(root_path+f'model_x{x_idx}_y{y_idx}.keras')
+        Plot_Trained_Fig(history,x_idx,y_idx,ax1,ax2)
+
+    #### END of Training loop ####
+    Save_Trained_Fig(fig,x_idx,y_idx)
+    model_to_save.save(root_path+f'model_x{x_idx}_y{y_idx}.keras')
     # save normalization param
     normal_para.append([ x_idx,y_idx,sheet.sheet_names[x_idx],sheet.sheet_names[y_idx],mean_data,std_data,mean_label,std_label])
     #columns=['x', 'y','x_name','y_name','mean_data','std_data','mean_label','std_label']
@@ -407,7 +465,7 @@ for y_idx in range(ScanN):
         pred=model.predict(test_data)       
         pred *= std_label
         pred += mean_label
-        print(pred)
+        #print(pred)
         preds.append(pred)
 
     #### Cal mean & std results ####
@@ -442,7 +500,7 @@ for y_idx in range(ScanN):
 
 
 
-##### 繪圖 ##### 
+
 if ScanN==1:
   # 1 x 1
   lowLayerN=upLayerN
@@ -466,6 +524,7 @@ fig.suptitle('Deep Learning Parameter Scan\nEpoch='+
              'lower: '+str(lowLayerN)+' layers & '+str(lowParaN)+' parameters')
 
 
+#ax1.set_aspect('equal')
 data_titles=sheet.sheet_names
 df1 = pd.DataFrame(means_min_loss, columns=data_titles,index=data_titles)
 sns.heatmap(df1, annot=True, fmt=".3f", linewidths=.5, ax=ax1, cmap='RdBu')
@@ -492,7 +551,7 @@ ax4.xaxis.tick_top()
 ax4.set_title('SD. of minimal val_loss')
 
 df5 = pd.DataFrame(means_min_mape, columns=data_titles,index=data_titles)
-sns.heatmap(df5, annot=True, fmt=".2f", linewidths=.5, ax=ax5, cmap='RdBu')  # cmap='seismic', higher = red
+sns.heatmap(df5, annot=True, fmt=".2f", linewidths=.5, ax=ax5, cmap='RdBu')  
 ax5.set(xlabel="", ylabel="")
 ax5.xaxis.tick_top()
 ax5.set_title('Mean of minimal mape')
@@ -547,12 +606,10 @@ with pd.ExcelWriter(root_path+sheetName+'_output.xlsx') as writer:
   df10.to_excel(writer, sheet_name='stds_avg_val_mape')
 
 
-##### 儲存各項參數結果 #####
 normal_para_df = pd.DataFrame(normal_para,columns=['x', 'y','x_name','y_name','mean_data','std_data','mean_label','std_label'])
 normal_para_df.to_excel(root_path+sheetName+'_normal_para.xlsx', index=False)
 
 
-##### 儲存測試集結果 #####
 if have_test_data:
     with pd.ExcelWriter(root_path+sheetName+'_preds.xlsx') as writer:
         for i,pred in enumerate(preds):
@@ -560,3 +617,6 @@ if have_test_data:
             df_pred.to_excel(writer, sheet_name=f'pred_{i}')
 
     
+
+
+
