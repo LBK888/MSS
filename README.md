@@ -47,6 +47,12 @@ The core application that leverages the insights gained from the *Small Model Te
 *   Pandas, NumPy, Scikit-learn
 *   Matplotlib, Seaborn
 
+## Funding Agents
+We are grateful for the support from :
+*  Grant: MOST 111-2313-B-019-005-MY3, National Science and Technology Council, Taiwan.
+*  National Taiwan Ocean University, Taiwan
+
 ## License
 
 This project is licensed under the Apache-2.0 License.
+
